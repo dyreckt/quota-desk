@@ -18,6 +18,16 @@ const ROUTE = '/quota-desk'
 const POLL_MS = 120000
 const UI_VERSION = '0.3.2'
 
+// Four heat tiers, shared by the bars and the chip parts:
+// <50 default, 50-84 yellow, 85-99 orange, 100 red.
+function levelFor(value) {
+  if (value === null || !Number.isFinite(value)) return ''
+  if (value >= 100) return 'crit'
+  if (value >= 85) return 'warn'
+  if (value >= 50) return 'mid'
+  return ''
+}
+
 // UI-only patch releases must not trip the mismatch banner: compare major.minor.
 function versionTrack(v) {
   return String(v || '').split('.').slice(0, 2).join('.')
@@ -51,14 +61,16 @@ const CSS = `
 .qd-winpct{margin-left:auto;font-variant-numeric:tabular-nums;color:var(--ui-text-primary)}
 .qd-bar{height:5px;border-radius:999px;background:var(--ui-stroke-secondary);margin-top:4px;overflow:hidden}
 .qd-bar>i{display:block;height:100%;background:var(--ui-accent)}
-.qd-bar>i.qd-fill-warn{background:var(--ui-yellow,#c08532)}
+.qd-bar>i.qd-fill-mid{background:var(--ui-yellow,#c08532)}
+.qd-bar>i.qd-fill-warn{background:var(--ui-orange,#db704b)}
 .qd-bar>i.qd-fill-crit{background:var(--ui-danger,var(--ui-red,#cf2d56))}
 .qd-reset{font-size:10px;color:var(--ui-text-quaternary);margin-top:2px}
 .qd-bad{margin-top:8px;font-size:12px;color:var(--ui-yellow,var(--ui-text-secondary));line-height:1.45}
 .qd-err{font-size:12px;color:var(--ui-danger,var(--ui-text-secondary));margin-top:10px}
 .qd-chip{display:inline-flex;gap:6px;align-items:center;font-size:11px;color:var(--ui-text-tertiary);cursor:pointer;padding:0 6px}
 .qd-chip:hover{color:var(--ui-text-primary)}
-.qd-chip-part-warn{color:var(--ui-yellow,#c08532)}
+.qd-chip-part-mid{color:var(--ui-yellow,#c08532)}
+.qd-chip-part-warn{color:var(--ui-orange,#db704b)}
 .qd-chip-part-crit{color:var(--ui-danger,var(--ui-red,#cf2d56))}
 .qd-version{font-size:10px;color:var(--ui-text-quaternary);margin-top:16px}
 .qd-mismatch{font-size:12px;color:var(--ui-yellow,#c08532);margin-top:10px}
@@ -198,7 +210,7 @@ function Window({ window }) {
       jsx('div', {
         className: 'qd-bar',
         children: jsx('i', {
-          className: value === null ? undefined : value >= 100 ? 'qd-fill-crit' : value >= 85 ? 'qd-fill-warn' : undefined,
+          className: levelFor(value) ? `qd-fill-${levelFor(value)}` : undefined,
           style: { width: `${value === null ? 0 : Math.max(0, Math.min(100, value))}%` }
         })
       }),
@@ -344,7 +356,7 @@ function StatusChip() {
       const name = id === 'openai-codex' ? 'codex' : id.split('-')[0]
       parts.push({
         text: `${name} ${value}`,
-        level: rowWorst >= 100 ? 'crit' : rowWorst >= 85 ? 'warn' : ''
+        level: levelFor(rowWorst)
       })
     }
     if (row.id === 'openai-codex' && row.banked_resets > 0 &&
