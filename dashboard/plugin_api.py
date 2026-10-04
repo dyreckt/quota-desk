@@ -512,6 +512,47 @@ _NOUS_CACHE: dict[str, Any] = {"at": 0.0, "row": None}
 NOUS_CACHE_TTL_S = 60.0
 
 
+def _finite(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(float(value)) else None
+
+
+def _nous_credits_block(info: Any) -> dict:
+    """Structured credit figures for the desk's Nous panel: dollar amounts as
+    numbers (not baked into text lines) plus the renewal date and the portal
+    top-up link, so the UI can lay them out properly."""
+    credits: dict[str, Any] = {}
+    sub = getattr(info, "subscription", None)
+    if sub is not None:
+        for attr, key in (("credits_remaining", "subscription_remaining"),
+                          ("monthly_credits", "subscription_cap"),
+                          ("rollover_credits", "rollover")):
+            value = _finite(getattr(sub, attr, None))
+            if value is not None:
+                # Floating dust can read as a tiny negative ("$-0.00 left").
+                credits[key] = max(0.0, value) if key != "subscription_cap" else value
+        period_end = str(getattr(sub, "current_period_end", "") or "").strip()
+        if period_end:
+            credits["renews_at"] = period_end
+    access = getattr(info, "paid_service_access_info", None)
+    if access is not None:
+        for attr, key in (("purchased_credits_remaining", "topup_remaining"),
+                          ("total_usable_credits", "total_usable")):
+            value = _finite(getattr(access, attr, None))
+            if value is not None:
+                credits[key] = value
+    try:
+        from hermes_cli.nous_account import nous_portal_topup_url
+
+        url = str(nous_portal_topup_url(info) or "").strip()
+        if url.startswith("http"):
+            credits["topup_url"] = url
+    except Exception:
+        pass
+    return credits
+
+
 def fetch_nous() -> Optional[dict]:
     """Nous Portal entitlement via core's own read path. `force_fresh=True` so the
     numbers are live, with a short in-process cache so a 2-minute desk poll does
@@ -545,12 +586,30 @@ def fetch_nous() -> Optional[dict]:
                    plan=getattr(snapshot, "plan", None),
                    windows=windows,
                    source="Nous Portal account API")
+
+        credits = _nous_credits_block(info)
+        if credits:
+            row["credits"] = credits
+            # Regenerate the Subscription gauge's "$X of $Y left" from the
+            # clamped figures so it never reads "$-0.00".
+            remaining = credits.get("subscription_remaining")
+            cap = credits.get("subscription_cap")
+            if remaining is not None and cap:
+                for window in row["windows"]:
+                    if window["label"] == "Subscription":
+                        window["detail"] = f"${remaining:,.2f} of ${cap:,.2f} left"
+
+        # Lines the structured credits block now renders properly stay out of
+        # the flat detail list; anything else (e.g. the depleted warning) stays.
+        handled = ("subscription credits:", "top-up credits:", "total usable:",
+                   "rollover:", "renews:", "top up:")
         row["details"] = [
             str(item) for item in (getattr(snapshot, "details", ()) or ())
-            # The CLI-only hint is noise in the desktop card; the billing link stays.
-            if str(item).strip() != "(or run /topup)"
+            if str(item).strip()
+            and str(item).strip() != "(or run /topup)"
+            and not str(item).strip().lower().startswith(handled)
         ]
-        if not windows and not row["details"]:
+        if not windows and not row["details"] and not credits:
             row["unavailable"] = "Nous Portal returned no entitlement details"
 
     _NOUS_CACHE.update({"at": now, "row": row})
@@ -577,9 +636,32 @@ def fetch_codex() -> Optional[dict]:
                                used, getattr(window, "reset_at", None)))
     if not windows:
         return None
-    return _row("openai-codex", "OpenAI Codex",
-                plan=getattr(snapshot, "plan", None), windows=windows,
-                source="Hermes credential pool")
+    row = _row("openai-codex", "OpenAI Codex",
+               plan=getattr(snapshot, "plan", None), windows=windows,
+               source="Hermes credential pool")
+
+    # Banked rate-limit resets ride on the raw usage payload as
+    # rate_limit_reset_credits.available_count. Surfaced as a first-class
+    # field so the desk can badge it instead of burying it in a text line.
+    raw = getattr(snapshot, "raw", None)
+    if isinstance(raw, dict):
+        credits = raw.get("rate_limit_reset_credits") if isinstance(
+            raw.get("rate_limit_reset_credits"), dict) else {}
+        count = _num(credits.get("available_count"))
+        if count is not None:
+            row["banked_resets"] = int(count)
+
+    details = []
+    for item in getattr(snapshot, "details", ()) or ():
+        text = str(item).strip()
+        # The banked count is a badge now, and the CLI hint belongs to the
+        # terminal; everything else (e.g. credits balance) stays.
+        if not text or "reset" in text.lower() and "/usage reset" in text:
+            continue
+        details.append(text)
+    if details:
+        row["details"] = details
+    return row
 
 
 # ── route ────────────────────────────────────────────────────────────────────
