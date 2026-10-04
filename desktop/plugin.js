@@ -16,7 +16,7 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 const ID = 'quota-desk'
 const ROUTE = '/quota-desk'
 const POLL_MS = 120000
-const UI_VERSION = '0.3.1'
+const UI_VERSION = '0.3.2'
 
 const host = sdk.host
 const {
@@ -46,13 +46,15 @@ const CSS = `
 .qd-winpct{margin-left:auto;font-variant-numeric:tabular-nums;color:var(--ui-text-primary)}
 .qd-bar{height:5px;border-radius:999px;background:var(--ui-stroke-secondary);margin-top:4px;overflow:hidden}
 .qd-bar>i{display:block;height:100%;background:var(--ui-accent)}
+.qd-bar>i.qd-fill-warn{background:var(--ui-yellow,#c08532)}
+.qd-bar>i.qd-fill-crit{background:var(--ui-danger,var(--ui-red,#cf2d56))}
 .qd-reset{font-size:10px;color:var(--ui-text-quaternary);margin-top:2px}
 .qd-bad{margin-top:8px;font-size:12px;color:var(--ui-yellow,var(--ui-text-secondary));line-height:1.45}
 .qd-err{font-size:12px;color:var(--ui-danger,var(--ui-text-secondary));margin-top:10px}
 .qd-chip{display:inline-flex;gap:6px;align-items:center;font-size:11px;color:var(--ui-text-tertiary);cursor:pointer;padding:0 6px}
 .qd-chip:hover{color:var(--ui-text-primary)}
-.qd-chip-warn,.qd-chip-warn:hover{color:var(--ui-yellow,#c08532)}
-.qd-chip-crit,.qd-chip-crit:hover{color:var(--ui-danger,var(--ui-red,#cf2d56))}
+.qd-chip-part-warn{color:var(--ui-yellow,#c08532)}
+.qd-chip-part-crit{color:var(--ui-danger,var(--ui-red,#cf2d56))}
 .qd-version{font-size:10px;color:var(--ui-text-quaternary);margin-top:16px}
 .qd-mismatch{font-size:12px;color:var(--ui-yellow,#c08532);margin-top:10px}
 .qd-refreshbtn{font-size:11px;color:var(--ui-text-tertiary);border:1px solid var(--ui-stroke-secondary);border-radius:6px;padding:2px 10px;cursor:pointer;background:transparent}
@@ -190,7 +192,10 @@ function Window({ window }) {
       }),
       jsx('div', {
         className: 'qd-bar',
-        children: jsx('i', { style: { width: `${value === null ? 0 : Math.max(0, Math.min(100, value))}%` } })
+        children: jsx('i', {
+          className: value === null ? undefined : value >= 100 ? 'qd-fill-crit' : value >= 85 ? 'qd-fill-warn' : undefined,
+          style: { width: `${value === null ? 0 : Math.max(0, Math.min(100, value))}%` }
+        })
       }),
       resetText(window.reset_at)
         ? jsx('div', { className: 'qd-reset', children: resetText(window.reset_at) })
@@ -317,48 +322,51 @@ function QuotaDeskPage() {
 function StatusChip() {
   const query = useUsage()
   const rows = (query && query.data && query.data.providers) || []
-  let worstPct = 0
-  let renewalDue = false
-  const parts = rows
-    .map(row => {
-      const windows = Array.isArray(row && row.windows) ? row.windows : []
-      for (const window of windows) {
-        const value = pct(window)
-        if (value !== null && Number.isFinite(value)) worstPct = Math.max(worstPct, value)
-      }
-      const value = summarise(row)
-      if (value === null) return null
-      const id = String((row && row.id) || '')
-      const name = id === 'openai-codex' ? 'codex' : id.split('-')[0]
-      return `${name} ${value}`
-    })
-    .filter(Boolean)
+  // Each part is colored by ITS OWN provider's state, not the desk's worst:
+  // 'nous 100%' turns red without implying kimi 22% is also on fire.
+  const parts = []
   for (const row of rows) {
     if (!row) continue
     const windows = Array.isArray(row.windows) ? row.windows : []
+    let rowWorst = 0
+    for (const window of windows) {
+      const value = pct(window)
+      if (value !== null && Number.isFinite(value)) rowWorst = Math.max(rowWorst, value)
+    }
+    const value = summarise(row)
+    if (value !== null) {
+      const id = String(row.id || '')
+      const name = id === 'openai-codex' ? 'codex' : id.split('-')[0]
+      parts.push({
+        text: `${name} ${value}`,
+        level: rowWorst >= 100 ? 'crit' : rowWorst >= 85 ? 'warn' : ''
+      })
+    }
     if (row.id === 'openai-codex' && row.banked_resets > 0 &&
         windows.some(window => pct(window) >= 100)) {
-      parts.push(`${row.banked_resets} resets`)
+      parts.push({ text: `${row.banked_resets} resets`, level: 'warn' })
     }
     const renewsAt = row.id === 'nous' && row.credits && row.credits.renews_at
     const then = renewsAt && Date.parse(renewsAt)
     if (Number.isFinite(then)) {
       const days = (then - Date.now()) / 86400000
-      if (days < 0) {
-        parts.push('nous renewal due')
-        renewalDue = true
-      } else if (days <= 7) {
-        parts.push(`nous renews ${Math.ceil(days)}d`)
-      }
+      if (days < 0) parts.push({ text: 'nous renewal due', level: 'warn' })
+      else if (days <= 7) parts.push({ text: `nous renews ${Math.ceil(days)}d`, level: '' })
     }
   }
-  const label = parts.length ? parts.join(' · ') : 'quota'
-  const level = worstPct >= 100 ? ' qd-chip-crit' : worstPct >= 85 || renewalDue ? ' qd-chip-warn' : ''
+  const children = []
+  parts.forEach((part, index) => {
+    if (index > 0) children.push(jsx('span', { children: ' · ' }, `sep-${index}`))
+    children.push(jsx('span', {
+      className: part.level ? `qd-chip-part-${part.level}` : undefined,
+      children: part.text
+    }, `part-${index}`))
+  })
   return jsx('span', {
-    className: `qd-chip${level}`,
+    className: 'qd-chip',
     title: 'Quota Desk — click to open',
     onClick: () => host && host.navigate && host.navigate(ROUTE),
-    children: label
+    children: children.length ? children : 'quota'
   })
 }
 
