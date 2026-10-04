@@ -47,7 +47,7 @@ from hermes_constants import get_hermes_home
 
 router = APIRouter()
 
-BACKEND_VERSION = "0.3.0"
+BACKEND_VERSION = "0.3.1"
 
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CLAUDE_OAUTH_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
@@ -634,7 +634,7 @@ def fetch_minimax() -> dict:
 
     try:
         headers = {"Authorization": f"Bearer {key}", "Accept": "application/json",
-                   "User-Agent": "quota-desk/0.3.0"}
+                   "User-Agent": "quota-desk/0.3.1"}
         with httpx.Client(timeout=5.0) as client:
             response = client.get("https://www.minimax.io/v1/token_plan/remains",
                                   headers=headers)

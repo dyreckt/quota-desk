@@ -16,7 +16,7 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 const ID = 'quota-desk'
 const ROUTE = '/quota-desk'
 const POLL_MS = 120000
-const UI_VERSION = '0.3.0'
+const UI_VERSION = '0.3.1'
 
 const host = sdk.host
 const {
@@ -51,10 +51,14 @@ const CSS = `
 .qd-err{font-size:12px;color:var(--ui-danger,var(--ui-text-secondary));margin-top:10px}
 .qd-chip{display:inline-flex;gap:6px;align-items:center;font-size:11px;color:var(--ui-text-tertiary);cursor:pointer;padding:0 6px}
 .qd-chip:hover{color:var(--ui-text-primary)}
-.qd-chip-warn,.qd-chip-warn:hover{color:var(--ui-yellow)}
-.qd-chip-crit,.qd-chip-crit:hover{color:var(--ui-danger)}
+.qd-chip-warn,.qd-chip-warn:hover{color:var(--ui-yellow,#c08532)}
+.qd-chip-crit,.qd-chip-crit:hover{color:var(--ui-danger,var(--ui-red,#cf2d56))}
 .qd-version{font-size:10px;color:var(--ui-text-quaternary);margin-top:16px}
-.qd-mismatch{font-size:12px;color:var(--ui-yellow);margin-top:10px}
+.qd-mismatch{font-size:12px;color:var(--ui-yellow,#c08532);margin-top:10px}
+.qd-refreshbtn{font-size:11px;color:var(--ui-text-tertiary);border:1px solid var(--ui-stroke-secondary);border-radius:6px;padding:2px 10px;cursor:pointer;background:transparent}
+.qd-refreshbtn:hover{color:var(--ui-text-primary)}
+.qd-refreshbtn:disabled{opacity:.5;cursor:default}
+.qd-titlerow{display:flex;align-items:baseline;gap:10px}
 .qd-credits{margin-top:10px;border-top:1px solid var(--ui-stroke-secondary);padding-top:8px}
 .qd-crow{display:flex;align-items:baseline;font-size:12px;padding:2px 0}
 .qd-clabel{color:var(--ui-text-secondary)}
@@ -268,7 +272,19 @@ function QuotaDeskPage() {
         className: 'qd-inner',
         children: [
           jsx('div', { className: 'qd-kicker', children: 'Quota Desk' }),
-          jsx('div', { className: 'qd-title', children: 'Subscription quota' }),
+          jsxs('div', {
+            className: 'qd-titlerow',
+            children: [
+              jsx('div', { className: 'qd-title', children: 'Subscription quota' }),
+              jsx('button', {
+                className: 'qd-refreshbtn',
+                disabled: !!(query && query.isFetching),
+                title: 'Re-read every provider now (Claude is re-read from the CLI store — run Claude Code once first if its token expired)',
+                onClick: () => { if (query && query.refetch) query.refetch() },
+                children: query && query.isFetching ? 'Reading…' : 'Refresh'
+              })
+            ]
+          }),
           jsx('div', {
             className: 'qd-sub',
             children: data && data.generated_at
