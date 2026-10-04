@@ -18,6 +18,14 @@ Hard constraints — do not relax these:
 * `observed_at` is the age of the SNAPSHOT, not a claim about quota freshness.
 * Responses carry derived numbers, sanitized source labels and timestamps only
   — never a credential, and never a raw resolver error string.
+
+Provider table:
+
+* Claude — Claude Code OAuth usage (read-only)
+* Kimi — coding-plan quota via Hermes secret scope
+* MiniMax — token-plan quota via Hermes secret scope
+* Nous Portal — subscription credits via core's account read
+* OpenAI Codex — core's read-only usage helper
 """
 
 from __future__ import annotations
@@ -38,6 +46,8 @@ from fastapi import APIRouter
 from hermes_constants import get_hermes_home
 
 router = APIRouter()
+
+BACKEND_VERSION = "0.3.0"
 
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CLAUDE_OAUTH_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
@@ -119,6 +129,91 @@ def _cache_dir() -> Path:
 
 def _snapshot_path() -> Path:
     return _cache_dir() / "last-good.json"
+
+
+def _history_path() -> Path:
+    return _cache_dir() / "history.jsonl"
+
+
+_HISTORY_LAST_WRITE = 0.0
+
+
+def _record_history(rows: list[dict]) -> None:
+    """Sample available windows at most once per half hour, without blocking the desk."""
+    global _HISTORY_LAST_WRITE
+    try:
+        now = _now()
+        if now - _HISTORY_LAST_WRITE < 1800:
+            return
+        path = _history_path()
+        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        if lines:
+            try:
+                previous = datetime.fromisoformat(json.loads(lines[-1])["at"]).timestamp()
+                if now - previous < 1800:
+                    _HISTORY_LAST_WRITE = previous
+                    return
+            except (ValueError, KeyError, TypeError):
+                pass
+        at = _iso(now)
+        entries = []
+        for row in rows:
+            for window in row.get("windows") or []:
+                used = _num(window.get("used_percent"))
+                if used is not None:
+                    entries.append(json.dumps({"at": at, "p": row["id"],
+                                               "w": window["label"], "u": used}))
+        if not entries:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if len(lines) + len(entries) > 4000:
+            path.write_text("\n".join((lines + entries)[-2000:]) + "\n", encoding="utf-8")
+        else:
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write("\n".join(entries) + "\n")
+        _HISTORY_LAST_WRITE = now
+    except Exception:
+        return
+
+
+def _projection(provider_id: str, label: str, current_used: float,
+                reset_at: Optional[str]) -> Optional[dict]:
+    """Project exhaustion from this cycle's samples, unless reset arrives first."""
+    try:
+        points = []
+        for line in _history_path().read_text(encoding="utf-8").splitlines():
+            try:
+                item = json.loads(line)
+                if item.get("p") != provider_id or item.get("w") != label:
+                    continue
+                used = _num(item.get("u"))
+                if used is not None:
+                    points.append((datetime.fromisoformat(item["at"]).timestamp(), used))
+            except (ValueError, KeyError, TypeError, AttributeError):
+                continue
+        cycle = []
+        for point in reversed(points):
+            if point[1] > current_used + 1:
+                break
+            cycle.append(point)
+        if len(cycle) < 2:
+            return None
+        first, last = cycle[-1], cycle[0]
+        span_days = (last[0] - first[0]) / 86400.0
+        if span_days < 1 / 24:
+            return None
+        rate_per_day = (last[1] - first[1]) / span_days
+        if rate_per_day <= 0.01:
+            return None
+        now = _now()
+        days_left = (100.0 - current_used) / rate_per_day
+        runs_out = now + days_left * 86400.0
+        if reset_at and datetime.fromisoformat(reset_at.replace("Z", "+00:00")).timestamp() < runs_out:
+            return None
+        return {"days_left": round(days_left, 1), "runs_out_at": _iso(runs_out),
+                "confidence": "medium" if len(cycle) >= 3 and span_days >= 0.5 else "low"}
+    except Exception:
+        return None
 
 
 def _read_last_good() -> dict:
@@ -506,6 +601,83 @@ def fetch_kimi() -> dict:
     return _row("kimi", "Kimi", plan=plan, windows=windows, source=source)
 
 
+# ── MiniMax (Hermes-resolved key; Bitwarden-backed) ──────────────────────────
+
+def _minimax_key() -> tuple[Optional[str], Optional[str]]:
+    """(api_key, source_label). Resolved the way Hermes resolves it, so the
+    Bitwarden-injected secret scope is the source — never a hand-copied .env."""
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        runtime = resolve_runtime_provider(requested="minimax") or {}
+        key = str(runtime.get("api_key") or "").strip()
+        if key:
+            return key, "Hermes secret scope (minimax)"
+    except Exception:
+        pass
+    try:
+        from agent.secret_scope import get_secret
+
+        key = (get_secret("MINIMAX_API_KEY") or "").strip()
+        if key:
+            return key, "Hermes secret scope (MINIMAX_API_KEY)"
+    except Exception:
+        pass
+    return None, None
+
+
+def fetch_minimax() -> dict:
+    key, source = _minimax_key()
+    if not key:
+        return _row("minimax", "MiniMax", unavailable=(
+            "No MiniMax key resolved in this profile's secret scope"))
+
+    try:
+        headers = {"Authorization": f"Bearer {key}", "Accept": "application/json",
+                   "User-Agent": "quota-desk/0.3.0"}
+        with httpx.Client(timeout=5.0) as client:
+            response = client.get("https://www.minimax.io/v1/token_plan/remains",
+                                  headers=headers)
+            if response.status_code == 404:
+                response = client.get("https://api.minimax.io/v1/token_plan/remains",
+                                      headers=headers)
+        if response.status_code != 200:
+            return _row("minimax", "MiniMax", source=source,
+                        unavailable=f"MiniMax HTTP {response.status_code}")
+        payload = response.json()
+    except (httpx.HTTPError, ValueError):
+        return _row("minimax", "MiniMax", source=source,
+                    unavailable="MiniMax usage API unreachable or returned invalid JSON")
+    if not isinstance(payload, dict):
+        return _row("minimax", "MiniMax", source=source,
+                    unavailable="MiniMax usage response missing quota fields")
+    base = payload.get("base_resp") if isinstance(payload.get("base_resp"), dict) else {}
+    if base.get("status_code") != 0:
+        return _row("minimax", "MiniMax", source=source,
+                    unavailable=str(base.get("status_msg") or "MiniMax usage API error"))
+    remains = payload.get("model_remains")
+    model = remains[0] if isinstance(remains, list) and remains and isinstance(remains[0], dict) else {}
+    windows: list[dict] = []
+    for label, prefix, reset_key in (("Session (5h)", "current_interval", "end_time"),
+                                     ("Weekly", "current_weekly", "weekly_end_time")):
+        remaining = _num(model.get(f"{prefix}_remaining_percent"))
+        if remaining is not None:
+            used = 100.0 - remaining
+        else:
+            total = _num(model.get(f"{prefix}_total_count"))
+            count = _num(model.get(f"{prefix}_usage_count"))
+            used = count / total * 100.0 if total is not None and total > 0 and count is not None else None
+        if used is None:
+            continue
+        reset = _num(model.get(reset_key))
+        if reset is not None and reset > 1e12:
+            reset /= 1000.0
+        windows.append(_window(label, used, _iso(reset) if reset is not None else None))
+    if not windows:
+        return _row("minimax", "MiniMax", source=source,
+                    unavailable="MiniMax usage response missing quota fields")
+    return _row("minimax", "MiniMax", windows=windows, source=source)
+
 # ── Nous Portal (core's own portal-account read) ─────────────────────────────
 
 _NOUS_CACHE: dict[str, Any] = {"at": 0.0, "row": None}
@@ -671,7 +843,7 @@ async def usage() -> dict:
     """One row per provider. Never raises: a provider that cannot be read
     returns a row with `unavailable` set."""
     rows: list[dict] = []
-    for fetcher in (fetch_claude, fetch_kimi, fetch_nous, fetch_codex):
+    for fetcher in (fetch_claude, fetch_kimi, fetch_minimax, fetch_nous, fetch_codex):
         try:
             row = fetcher()
         except Exception as exc:  # noqa: BLE001 - a broken reader must not 500 the desk
@@ -679,4 +851,14 @@ async def usage() -> dict:
                        unavailable=f"reader failed ({type(exc).__name__})")
         if row:
             rows.append(row)
-    return {"generated_at": _iso(_now()), "providers": rows}
+    _record_history(rows)
+    for row in rows:
+        for window in row.get("windows") or []:
+            used = _num(window.get("used_percent"))
+            if used is not None and used < 100:
+                projection = _projection(row["id"], window["label"], used,
+                                         window.get("reset_at"))
+                if projection is not None:
+                    window["projection"] = projection
+    return {"backend_version": BACKEND_VERSION,
+            "generated_at": _iso(_now()), "providers": rows}

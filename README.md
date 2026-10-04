@@ -8,8 +8,15 @@ from, and why a provider couldn't be read.
 |---|---|---|
 | **Claude** (Max) | macOS Keychain `Claude Code-credentials`, or `~/.claude/.credentials.json` | Current session, current week, and any model-scoped limit (e.g. **Fable**) |
 | **Kimi** (coding plan) | Hermes secret scope (`kimi-coding`) | Weekly and 5-hour session windows |
+| **MiniMax** (coding plan) | Hermes secret scope (`minimax` / `MINIMAX_API_KEY`) | Weekly and 5-hour session windows |
 | **Nous Portal** | Nous account API | Plan, subscription credits, top-up, rollover, renewal |
-| **OpenAI Codex** | Hermes credential pool | Weekly window |
+| **OpenAI Codex** | Hermes credential pool | Weekly window and banked rate-limit resets |
+
+The status-bar chip is state-aware: it turns yellow when any provider crosses
+85% used, red at 100%, and surfaces banked Codex resets and an upcoming Nous
+renewal right in the chip. Each window can also show a burn-rate projection
+("at this pace, runs out in 3d") once the plugin has gathered a few hours of
+its own history samples.
 
 ## Read-only by construction
 

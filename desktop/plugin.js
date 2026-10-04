@@ -16,6 +16,7 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 const ID = 'quota-desk'
 const ROUTE = '/quota-desk'
 const POLL_MS = 120000
+const UI_VERSION = '0.3.0'
 
 const host = sdk.host
 const {
@@ -50,6 +51,10 @@ const CSS = `
 .qd-err{font-size:12px;color:var(--ui-danger,var(--ui-text-secondary));margin-top:10px}
 .qd-chip{display:inline-flex;gap:6px;align-items:center;font-size:11px;color:var(--ui-text-tertiary);cursor:pointer;padding:0 6px}
 .qd-chip:hover{color:var(--ui-text-primary)}
+.qd-chip-warn,.qd-chip-warn:hover{color:var(--ui-yellow)}
+.qd-chip-crit,.qd-chip-crit:hover{color:var(--ui-danger)}
+.qd-version{font-size:10px;color:var(--ui-text-quaternary);margin-top:16px}
+.qd-mismatch{font-size:12px;color:var(--ui-yellow);margin-top:10px}
 .qd-credits{margin-top:10px;border-top:1px solid var(--ui-stroke-secondary);padding-top:8px}
 .qd-crow{display:flex;align-items:baseline;font-size:12px;padding:2px 0}
 .qd-clabel{color:var(--ui-text-secondary)}
@@ -83,6 +88,17 @@ function resetText(iso) {
   const hours = Math.round(mins / 60)
   if (hours < 48) return `resets in ${hours}h`
   return `resets in ${Math.round(hours / 24)}d`
+}
+
+function projectionText(projection) {
+  if (!projection || typeof projection.days_left !== 'number' || !Number.isFinite(projection.days_left)) return null
+  const days = projection.days_left
+  const time = days < 1 ? `${Math.max(0, Math.round(days * 24))}h` : `${Math.round(days * 10) / 10}d`
+  const date = projection.runs_out_at && Date.parse(projection.runs_out_at)
+  const when = date && Number.isFinite(date)
+    ? ` (${new Date(date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }).replace(',', '')})`
+    : ''
+  return `at this pace, runs out in ${time}${when}`
 }
 
 function usd(value) {
@@ -157,6 +173,7 @@ function CreditsPanel({ credits }) {
 
 function Window({ window }) {
   const value = pct(window)
+  const projection = projectionText(window && window.projection)
   return jsxs('div', {
     className: 'qd-win',
     children: [
@@ -174,6 +191,7 @@ function Window({ window }) {
       resetText(window.reset_at)
         ? jsx('div', { className: 'qd-reset', children: resetText(window.reset_at) })
         : null,
+      projection ? jsx('div', { className: 'qd-reset', children: projection }) : null,
       window.detail ? jsx('div', { className: 'qd-reset', children: window.detail }) : null
     ]
   })
@@ -219,7 +237,7 @@ function ProviderCard({ row }) {
             children: [
               jsx('div', { className: 'qd-reset', children: `Last known — snapshot ${last.observed_at || 'time unknown'}` }),
               last.windows.map((window, index) =>
-                jsx(Window, { window: { ...window, reset_at: null } }, `last-${index}`))
+                jsx(Window, { window: { ...window, reset_at: null, projection: null } }, `last-${index}`))
             ]
           })
         : null
@@ -257,6 +275,9 @@ function QuotaDeskPage() {
               ? `Read ${new Date(data.generated_at).toLocaleTimeString()} · snapshot age is shown per provider`
               : 'Reading provider quota…'
           }),
+          data && data.backend_version && data.backend_version !== UI_VERSION
+            ? jsx('div', { className: 'qd-mismatch', children: 'Quota Desk UI and backend are out of sync — update/reload the plugin.' })
+            : null,
           failed
             ? jsx('div', { className: 'qd-err', children: `Backend unavailable: ${String((failed && failed.message) || failed)}` })
             : null,
@@ -266,7 +287,11 @@ function QuotaDeskPage() {
           rows.map((row, index) => jsx(ProviderCard, { row }, (row && row.id) || String(index))),
           !failed && !rows.length && query && !query.isLoading
             ? jsx('div', { className: 'qd-bad', children: 'No provider rows returned.' })
-            : null
+            : null,
+          jsx('div', {
+            className: 'qd-version',
+            children: `UI ${UI_VERSION} · backend ${(data && data.backend_version) || 'unknown'}`
+          })
         ]
       })
     ]
@@ -276,8 +301,15 @@ function QuotaDeskPage() {
 function StatusChip() {
   const query = useUsage()
   const rows = (query && query.data && query.data.providers) || []
+  let worstPct = 0
+  let renewalDue = false
   const parts = rows
     .map(row => {
+      const windows = Array.isArray(row && row.windows) ? row.windows : []
+      for (const window of windows) {
+        const value = pct(window)
+        if (value !== null && Number.isFinite(value)) worstPct = Math.max(worstPct, value)
+      }
       const value = summarise(row)
       if (value === null) return null
       const id = String((row && row.id) || '')
@@ -285,9 +317,29 @@ function StatusChip() {
       return `${name} ${value}`
     })
     .filter(Boolean)
+  for (const row of rows) {
+    if (!row) continue
+    const windows = Array.isArray(row.windows) ? row.windows : []
+    if (row.id === 'openai-codex' && row.banked_resets > 0 &&
+        windows.some(window => pct(window) >= 100)) {
+      parts.push(`${row.banked_resets} resets`)
+    }
+    const renewsAt = row.id === 'nous' && row.credits && row.credits.renews_at
+    const then = renewsAt && Date.parse(renewsAt)
+    if (Number.isFinite(then)) {
+      const days = (then - Date.now()) / 86400000
+      if (days < 0) {
+        parts.push('nous renewal due')
+        renewalDue = true
+      } else if (days <= 7) {
+        parts.push(`nous renews ${Math.ceil(days)}d`)
+      }
+    }
+  }
   const label = parts.length ? parts.join(' · ') : 'quota'
+  const level = worstPct >= 100 ? ' qd-chip-crit' : worstPct >= 85 || renewalDue ? ' qd-chip-warn' : ''
   return jsx('span', {
-    className: 'qd-chip',
+    className: `qd-chip${level}`,
     title: 'Quota Desk — click to open',
     onClick: () => host && host.navigate && host.navigate(ROUTE),
     children: label
