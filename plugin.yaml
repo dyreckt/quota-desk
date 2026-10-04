@@ -1,0 +1,16 @@
+name: quota-desk
+version: 0.1.0
+manifest_version: 1
+api_version: 1
+description: >
+  Read-only subscription quota for Hermes Desktop. A thin status-bar chip and page
+  backed by an authenticated dashboard route. Claude is read read-only from the Claude
+  Code stores (macOS Keychain + ~/.claude/.credentials.json) and is never refreshed or
+  rewritten; Kimi resolves through Hermes's own Bitwarden-backed secret scope. Every row
+  reports its credential source, the age of the snapshot, and an explicit reason when a
+  provider cannot be read, instead of dropping the card.
+author: John / Hermes (default profile)
+license: MIT
+tags: [dashboard, desktop, quota, usage]
+provides_tools: []
+provides_hooks: []

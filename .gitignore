@@ -1,0 +1,15 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local scratch that must never be published (screenshots/HTML may embed
+# real account details and usage figures)
+staging/
+*.png
+
+# OS noise
+.DS_Store
+Thumbs.db

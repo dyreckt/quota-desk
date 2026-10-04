@@ -1,0 +1,8 @@
+{
+  "name": "quota-desk",
+  "label": "Quota Desk",
+  "description": "Read-only subscription quota and reset windows, with credential source, snapshot age, and an explicit reason when a provider cannot be read.",
+  "icon": "Dashboard",
+  "version": "0.1.0",
+  "api": "plugin_api.py"
+}
