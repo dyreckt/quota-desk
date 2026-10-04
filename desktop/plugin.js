@@ -18,6 +18,11 @@ const ROUTE = '/quota-desk'
 const POLL_MS = 120000
 const UI_VERSION = '0.3.2'
 
+// UI-only patch releases must not trip the mismatch banner: compare major.minor.
+function versionTrack(v) {
+  return String(v || '').split('.').slice(0, 2).join('.')
+}
+
 const host = sdk.host
 const {
   ROUTES_AREA,
@@ -296,7 +301,7 @@ function QuotaDeskPage() {
               ? `Read ${new Date(data.generated_at).toLocaleTimeString()} · snapshot age is shown per provider`
               : 'Reading provider quota…'
           }),
-          data && data.backend_version && data.backend_version !== UI_VERSION
+          data && data.backend_version && versionTrack(data.backend_version) !== versionTrack(UI_VERSION)
             ? jsx('div', { className: 'qd-mismatch', children: 'Quota Desk UI and backend are out of sync — update/reload the plugin.' })
             : null,
           failed
