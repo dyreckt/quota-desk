@@ -12,11 +12,35 @@
 
 import * as sdk from '@hermes/plugin-sdk'
 import { jsx, jsxs } from 'react/jsx-runtime'
+import { useEffect, useState } from 'react'
 
 const ID = 'quota-desk'
 const ROUTE = '/quota-desk'
 const POLL_MS = 120000
-const UI_VERSION = '0.3.2'
+const UI_VERSION = '0.3.4'
+
+// Status-bar chip visibility is a per-app preference, toggled from the page.
+const CHIP_HIDDEN_KEY = 'quota-desk:chip-hidden'
+const CHIP_EVENT = 'quota-desk:chip-visibility'
+
+function chipHidden() {
+  try { return localStorage.getItem(CHIP_HIDDEN_KEY) === '1' } catch { return false }
+}
+
+function setChipHidden(hidden) {
+  try { localStorage.setItem(CHIP_HIDDEN_KEY, hidden ? '1' : '0') } catch { /* ignore */ }
+  window.dispatchEvent(new CustomEvent(CHIP_EVENT))
+}
+
+function useChipHidden() {
+  const [hidden, setHidden] = useState(chipHidden)
+  useEffect(() => {
+    const update = () => setHidden(chipHidden())
+    window.addEventListener(CHIP_EVENT, update)
+    return () => window.removeEventListener(CHIP_EVENT, update)
+  }, [])
+  return hidden
+}
 
 // Four heat tiers, shared by the bars and the chip parts:
 // <50 default, 50-84 yellow, 85-99 orange, 100 red.
@@ -283,6 +307,7 @@ function useUsage() {
 
 function QuotaDeskPage() {
   const query = useUsage()
+  const hidden = useChipHidden()
   const data = query && query.data
   const rows = (data && data.providers) || []
   const failed = query && query.error
@@ -326,9 +351,16 @@ function QuotaDeskPage() {
           !failed && !rows.length && query && !query.isLoading
             ? jsx('div', { className: 'qd-bad', children: 'No provider rows returned.' })
             : null,
-          jsx('div', {
+          jsxs('div', {
             className: 'qd-version',
-            children: `UI ${UI_VERSION} · backend ${(data && data.backend_version) || 'unknown'}`
+            children: [
+              `UI ${UI_VERSION} · backend ${(data && data.backend_version) || 'unknown'} · `,
+              jsx('span', {
+                className: 'qd-topup',
+                onClick: () => setChipHidden(!hidden),
+                children: hidden ? 'show status-bar chip' : 'hide status-bar chip'
+              })
+            ]
           })
         ]
       })
@@ -338,7 +370,9 @@ function QuotaDeskPage() {
 
 function StatusChip() {
   const query = useUsage()
+  const hidden = useChipHidden()
   const rows = (query && query.data && query.data.providers) || []
+  if (hidden) return null
   // Each part is colored by ITS OWN provider's state, not the desk's worst:
   // 'nous 100%' turns red without implying kimi 22% is also on fire.
   const parts = []
