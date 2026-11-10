@@ -47,7 +47,7 @@ from hermes_constants import get_hermes_home
 
 router = APIRouter()
 
-BACKEND_VERSION = "0.3.1"
+BACKEND_VERSION = "0.3.6"
 
 CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CLAUDE_OAUTH_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
@@ -836,14 +836,41 @@ def fetch_codex() -> Optional[dict]:
     return row
 
 
-# ── route ────────────────────────────────────────────────────────────────────
+def fetch_antigravity() -> Optional[dict]:
+    """Antigravity (shared Google AI Ultra) through Hermes's own usage hook.
+
+    The antigravity-oauth plugin answers it with `agy -p /usage` from the signed-in
+    session: no model turn, no quota spent, and the OAuth token is never read here.
+    """
+    try:
+        from agent.account_usage import fetch_account_usage
+
+        snapshot = fetch_account_usage("antigravity-oauth")
+    except Exception:
+        return None
+    if snapshot is None or not getattr(snapshot, "available", False):
+        # Signed out or plugin absent: no card, like Codex.
+        return None
+    windows = []
+    for window in getattr(snapshot, "windows", ()) or ():
+        used = _num(getattr(window, "used_percent", None))
+        if used is None:
+            continue
+        windows.append(_window(str(getattr(window, "label", "") or "Window"),
+                               used, getattr(window, "reset_at", None),
+                               getattr(window, "detail", None)))
+    if not windows:
+        return None
+    return _row("antigravity", "Antigravity", plan=getattr(snapshot, "plan", None),
+                windows=windows, source="agy /usage (antigravity-oauth plugin)")
+
 
 @router.get("/usage")
 async def usage() -> dict:
     """One row per provider. Never raises: a provider that cannot be read
     returns a row with `unavailable` set."""
     rows: list[dict] = []
-    for fetcher in (fetch_claude, fetch_kimi, fetch_minimax, fetch_nous, fetch_codex):
+    for fetcher in (fetch_claude, fetch_kimi, fetch_minimax, fetch_nous, fetch_codex, fetch_antigravity):
         try:
             row = fetcher()
         except Exception as exc:  # noqa: BLE001 - a broken reader must not 500 the desk
